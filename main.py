@@ -1,5 +1,6 @@
 import logging
 import threading
+import asyncio
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -10,7 +11,10 @@ from constants import (
     EDUCATION_TOPICS, MAIN_MENU_BUTTONS
 )
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 CB_MAIN_MENU = "menu"
@@ -56,78 +60,137 @@ async def disclaimer_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_overview(update: Update, context: ContextTypes.DEFAULT_TYPE, send_new=False):
     if update.callback_query:
         await update.callback_query.answer()
+    
     rates = await fetch_exchange_rates("USD")
+    
     if rates is None:
-        text = "Market data temporarily unavailable. Please try again later."
+        text = "⚠️ Market data temporarily unavailable. Please try again later."
     else:
         pairs_display = []
-        for pair in ["EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"]:
+        major_pairs = ["EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"]
+        for pair in major_pairs:
             if pair in rates:
-                pairs_display.append(f"{pair}/USD: {rates[pair]:.4f}")
-        text = "📊 *Market Overview (base: USD)*\n\n" + "\n".join(pairs_display)
+                rate = rates[pair]
+                if pair == "JPY":
+                    pairs_display.append(f"{pair}/USD: {rate:.2f}")
+                else:
+                    pairs_display.append(f"{pair}/USD: {rate:.4f}")
+        
+        if pairs_display:
+            text = "📊 *Market Overview (base: USD)*\n\n" + "\n".join(pairs_display)
+            text += "\n\n_Data provided by Frankfurter API_"
+        else:
+            text = "⚠️ No data available for major pairs."
+    
     if send_new:
         await update.message.reply_text(text, reply_markup=back_button(), parse_mode="Markdown")
     else:
         await update.callback_query.edit_message_text(text, reply_markup=back_button(), parse_mode="Markdown")
 
 async def show_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, send_new=False):
-    buttons = [[InlineKeyboardButton(base, callback_data=f"{PAIRS_CB_PREFIX}{base}")] for base in PAIRS_BASES]
+    buttons = []
+    for base in PAIRS_BASES:
+        buttons.append([InlineKeyboardButton(base, callback_data=f"{PAIRS_CB_PREFIX}{base}")])
     buttons.append([InlineKeyboardButton("« Back", callback_data=CB_BACK)])
     keyboard = InlineKeyboardMarkup(buttons)
-    text = "Select a base currency to see exchange rates:"
+    text = "💱 Select a base currency to see exchange rates:"
     if send_new:
         await update.message.reply_text(text, reply_markup=keyboard)
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
-        await update.callback_query.answer()
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+            await update.callback_query.answer()
 
 async def show_pairs_rates(update: Update, context: ContextTypes.DEFAULT_TYPE, base: str):
-    await update.callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
+    
     rates = await fetch_exchange_rates(base)
+    
     if rates is None:
-        text = "Market data temporarily unavailable. Please try again later."
+        text = "⚠️ Market data temporarily unavailable. Please try again later."
     else:
-        lines = [f"{curr}: {rates[curr]:.4f}" for curr in sorted(rates.keys()) if curr != base]
-        lines = lines[:20]
-        text = f"💱 *Exchange Rates (base: {base})*\n\n" + "\n".join(lines)
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to bases", callback_data=CB_PAIRS)]])
+        lines = []
+        for curr in sorted(rates.keys()):
+            if curr != base:
+                rate = rates[curr]
+                if curr in ["JPY", "KRW", "IDR", "VND"]:
+                    lines.append(f"{curr}: {rate:.2f}")
+                else:
+                    lines.append(f"{curr}: {rate:.4f}")
+        lines = lines[:25]  # Show top 25 pairs
+        
+        if lines:
+            text = f"💱 *Exchange Rates (base: {base})*\n\n" + "\n".join(lines)
+            text += "\n\n_Data provided by Frankfurter API_"
+        else:
+            text = f"⚠️ No data available for {base}."
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("« Back to bases", callback_data=CB_PAIRS)]
+    ])
     await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 async def show_education_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, send_new=False):
-    buttons = [[InlineKeyboardButton(topic["title"], callback_data=f"{EDU_CB_PREFIX}{key}")]
-               for key, topic in EDUCATION_TOPICS.items()]
+    buttons = []
+    for key, topic in EDUCATION_TOPICS.items():
+        buttons.append([InlineKeyboardButton(topic["title"], callback_data=f"{EDU_CB_PREFIX}{key}")])
     buttons.append([InlineKeyboardButton("« Back", callback_data=CB_BACK)])
     keyboard = InlineKeyboardMarkup(buttons)
     text = "📚 Select a topic to learn about forex:"
     if send_new:
         await update.message.reply_text(text, reply_markup=keyboard)
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
-        await update.callback_query.answer()
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+            await update.callback_query.answer()
 
 async def show_education_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_key: str):
-    await update.callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
+    
     topic = EDUCATION_TOPICS.get(topic_key)
-    text = f"*{topic['title']}*\n\n{topic['content']}" if topic else "Sorry, that topic is not available."
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to topics", callback_data=CB_EDUCATION)]])
+    if not topic:
+        text = "❌ Sorry, that topic is not available."
+    else:
+        text = f"*{topic['title']}*\n\n{topic['content']}"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("« Back to topics", callback_data=CB_EDUCATION)]
+    ])
     await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 async def show_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    text = "📅 Economic Calendar is not configured. You can add an Alpha Vantage API key later to enable this feature."
-    await update.callback_query.edit_message_text(text, reply_markup=back_button())
+    if update.callback_query:
+        await update.callback_query.answer()
+    
+    text = (
+        "📅 *Economic Calendar*\n\n"
+        "Economic calendar feature requires an Alpha Vantage API key.\n\n"
+        "To enable this feature:\n"
+        "1. Get a free API key from alphavantage.co\n"
+        "2. Add it as ALPHA_VANTAGE_API_KEY in Railway environment variables\n\n"
+        "For now, you can check economic news at:\n"
+        "• forexfactory.com\n"
+        "• investing.com\n"
+        "• bloomberg.com"
+    )
+    await update.callback_query.edit_message_text(text, reply_markup=back_button(), parse_mode="Markdown")
 
 async def show_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     await update.callback_query.edit_message_text(ABOUT_TEXT, reply_markup=back_button())
 
 async def show_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     await update.callback_query.edit_message_text(DISCLAIMER_TEXT, reply_markup=back_button())
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+    
     if data == CB_MAIN_MENU:
         await show_main_menu(update, context)
     elif data == CB_OVERVIEW:
@@ -152,22 +215,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Unknown option", show_alert=False)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text(
-        "Welcome to FX Market Report. Please select an option:",
-        reply_markup=main_menu_keyboard()
-    )
-    await update.callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            "Welcome to FX Market Report. Please select an option:",
+            reply_markup=main_menu_keyboard()
+        )
+        await update.callback_query.answer()
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(msg="Exception:", exc_info=context.error)
     if update and update.effective_message:
-        await update.effective_message.reply_text("An unexpected error occurred. Please try again later.")
+        try:
+            await update.effective_message.reply_text(
+                "❌ An unexpected error occurred. Please try again later."
+            )
+        except Exception:
+            pass
 
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
 def run_health_server():
-    """Run a minimal HTTP server for health checks (used in polling mode)."""
     app = web.Application()
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
@@ -175,6 +243,8 @@ def run_health_server():
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("market", market_command))
@@ -185,6 +255,7 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
 
+    # Set commands
     commands = [
         BotCommand("start", "Start the bot and show menu"),
         BotCommand("help", "Get help"),
@@ -210,7 +281,7 @@ def main():
             webhook_app=web_app
         )
     else:
-        logger.info("WEBHOOK_URL not set. Starting in polling mode with health server.")
+        logger.info("Starting in polling mode with health server.")
         thread = threading.Thread(target=run_health_server, daemon=True)
         thread.start()
         application.run_polling()
