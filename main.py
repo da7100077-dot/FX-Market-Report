@@ -163,7 +163,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.effective_message:
         await update.effective_message.reply_text("An unexpected error occurred. Please try again later.")
 
-# Health check endpoint
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
@@ -198,7 +197,6 @@ def main():
     application.bot.set_my_commands(commands)
 
     if WEBHOOK_URL:
-        # Webhook mode
         webhook_path = f"/{BOT_TOKEN}"
         full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}{webhook_path}"
         application.bot.set_webhook(url=full_webhook_url, secret_token=WEBHOOK_SECRET)
@@ -212,7 +210,6 @@ def main():
             webhook_app=web_app
         )
     else:
-        # Polling mode – start health server in background thread
         logger.info("WEBHOOK_URL not set. Starting in polling mode with health server.")
         thread = threading.Thread(target=run_health_server, daemon=True)
         thread.start()
